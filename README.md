@@ -7,9 +7,9 @@
 - IT-themed gameplay experience
 
 ## Tech Stack
-- Next.js 15.4.1 (App Router)
-- Tailwind CSS v4 (no tailwind.config.js)
+- Next.js 15.4.1
+- Tailwind CSS v4 
 - TypeScript
-- shadcn/ui (with Tailwind integration)
+- shadcn/ui
 - PostgreSQL + Prisma ORM
 - Motion.dev for animations
