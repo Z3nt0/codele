@@ -1,101 +1,101 @@
 // /app/api/word-of-day/route.ts
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { InferenceClient } from "@huggingface/inference";
+import OpenAI from "openai";
 
-const huggingFaceApiToken = process.env.HF_TOKEN;
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
-if (!huggingFaceApiToken) {
-  throw new Error("HF_TOKEN is not set in environment variables.");
+if (!process.env.OPENAI_API_KEY) {
+  throw new Error("OPENAI_API_KEY is not set in environment variables.");
 }
 
-const client = new InferenceClient(huggingFaceApiToken);
+// ✅ FIX: This function calculates the start of the current day in Manila Time
+const getManilaMidnight = (): Date => {
+  const now = new Date();
+  const manilaOffset = 8 * 60; // Manila is UTC+8
+  const localOffset = now.getTimezoneOffset(); // Local timezone offset in minutes
+  
+  const manilaTime = new Date(now.getTime() + (manilaOffset + localOffset) * 60 * 1000);
+  
+  manilaTime.setHours(0, 0, 0, 0);
+  return manilaTime;
+};
 
-async function getITWordFromHuggingFace(): Promise<string | null> {
-  const prompt = "Please choose and output ONLY one 5-letter word in uppercase letters related to programming, networking, internet, or IT. Do not output anything else besides the word.c";
+async function getITWordFromOpenAI(): Promise<string | null> {
+  const prompt = `Choose exactly ONE 5-letter English word in UPPERCASE 
+that is related to programming, networking, internet, or IT. 
+Do not include punctuation, numbers, or extra words. Output only the word.`;
 
   try {
-    const completion = await client.chatCompletion({
-      // ✅ FIX: Using the provider and model from your example
-      provider: "featherless-ai",
-      model: "mistralai/Mistral-7B-Instruct-v0.2",
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "user",
           content: prompt,
         },
       ],
-      parameters: { max_new_tokens: 10, temperature: 0.7 },
+      max_tokens: 10,
+      temperature: 0.7,
     });
 
-    const generatedText = completion.choices[0]?.message?.content;
-    
-    console.log("Raw text from Hugging Face:", generatedText);
+    const generatedText = completion.choices[0]?.message?.content?.trim();
+    console.log("Raw text from OpenAI:", generatedText);
 
-    if (!generatedText) {
-      console.error("Hugging Face API returned no content.");
-      return null;
-    }
+    if (!generatedText) return null;
 
-    const words = generatedText.split(/[\s,.'";:\n]+/)
-      .map(word => word.trim().toUpperCase())
-      .filter(word => word.length === 5 && /^[A-Z]+$/.test(word));
+    const words = generatedText
+      .split(/[\s,.'";:\n]+/)
+      .map((w) => w.trim().toUpperCase())
+      .filter((w) => w.length === 5 && /^[A-Z]+$/.test(w));
 
-    console.log("Parsed and filtered words:", words);
-
-    if (words.length > 0) {
-      console.log("Final word chosen:", words[0]);
-      return words[0];
-    }
-
-    console.warn("No 5-letter IT word was found in the API response.");
-
+    return words.length > 0 ? words[0] : null;
   } catch (error) {
-    console.error("Hugging Face API call failed:", error);
+    console.error("OpenAI API call failed:", error);
+    return null;
   }
-  return null;
 }
 
 export async function GET() {
   try {
-    const now = new Date();
-    now.setSeconds(0, 0); 
-    const testDate = now;
+    // ✅ FIX: Use the Manila midnight time for the daily check
+    const manilaMidnight = getManilaMidnight();
 
+    // ✅ Check if today's word is already saved
     const existingWord = await prisma.wordOfDay.findFirst({
-      where: {
-        date: testDate,
-      },
+      where: { date: manilaMidnight },
     });
+    if (existingWord) return NextResponse.json(existingWord);
 
-    if (existingWord) {
-      return NextResponse.json(existingWord);
-    }
-    
-    const newWord = await getITWordFromHuggingFace();
+    // ✅ Generate new word
+    const newWord = await getITWordFromOpenAI();
+    if (!newWord) throw new Error("Failed to generate a valid word from OpenAI API.");
 
-    if (!newWord) {
-      throw new Error("Failed to generate a valid word from Hugging Face API. Check logs for details.");
-    }
-
-    const definitionResponse = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${newWord}`);
+    // ✅ Get definition
+    const definitionResponse = await fetch(
+      `https://api.dictionaryapi.dev/api/v2/entries/en/${newWord}`
+    );
     const definitionData = await definitionResponse.json();
-    const definition = definitionData[0]?.meanings[0]?.definitions[0]?.definition || "Definition not found.";
+    const definition =
+      definitionData[0]?.meanings[0]?.definitions[0]?.definition ||
+      "Definition not found.";
 
+    // ✅ Save to DB
     const wordOfDay = await prisma.wordOfDay.create({
       data: {
         word: newWord,
-        date: testDate,
-        source: "Hugging Face / Dictionary API",
+        date: manilaMidnight, // ✅ FIX: Save with Manila midnight time
+        source: "OpenAI / Dictionary API",
       },
     });
-    
-    const responseWithDefinition = { ...wordOfDay, definition };
 
-    return NextResponse.json(responseWithDefinition);
+    return NextResponse.json({ ...wordOfDay, definition });
   } catch (error) {
     console.error("Word generation error:", error);
-    const errorMessage = error instanceof Error ? error.message : "An unknown error occurred.";
+    const errorMessage =
+      error instanceof Error ? error.message : "An unknown error occurred.";
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }
